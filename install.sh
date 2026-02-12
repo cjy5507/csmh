@@ -8,6 +8,7 @@ CSMH_HOME="$CODEX_HOME/csmh"
 SKILLS_DIR="$CODEX_HOME/skills"
 BIN_DIR="$CODEX_HOME/bin"
 USER_BIN_DIR="${HOME}/.local/bin"
+DEFAULT_CODEX_HOME="${HOME}/.codex"
 
 print_step() {
   echo "[csmh] $1"
@@ -67,13 +68,23 @@ main() {
   cat > "$BIN_DIR/csmh" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
 exec python3 "$CSMH_HOME/csmh.py" "\$@"
 EOF
   chmod +x "$BIN_DIR/csmh"
-  ln -sf "$BIN_DIR/csmh" "$USER_BIN_DIR/csmh"
+
+  local command_path
+  command_path="$BIN_DIR/csmh"
+  if [[ "$CODEX_HOME" == "$DEFAULT_CODEX_HOME" ]]; then
+    ln -sf "$BIN_DIR/csmh" "$USER_BIN_DIR/csmh"
+    command_path="$USER_BIN_DIR/csmh"
+  else
+    print_step "skipping global symlink because CODEX_HOME is custom: $CODEX_HOME"
+    print_step "use this command path directly: $BIN_DIR/csmh"
+  fi
 
   print_step "done"
-  echo "- command: $USER_BIN_DIR/csmh"
+  echo "- command: $command_path"
   echo "- skills: $SKILLS_DIR/csmh-*"
   echo "- runtime: $CSMH_HOME"
   echo ""

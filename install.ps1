@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $RepoUrl = "https://github.com/cjy5507/csmh.git"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
+$DefaultCodexHome = Join-Path $env:USERPROFILE ".codex"
 $CsmhHome = Join-Path $CodexHome "csmh"
 $SkillsDir = Join-Path $CodexHome "skills"
 $BinDir = Join-Path $CodexHome "bin"
@@ -59,14 +60,23 @@ python "{CSMH_HOME}\csmh.py" @Args
 '@.Replace("{CSMH_HOME}", $CsmhHome)
 
 $psWrapper | Set-Content -Path (Join-Path $BinDir "csmh.ps1") -Encoding UTF8
-$psWrapper | Set-Content -Path (Join-Path $UserBinDir "csmh.ps1") -Encoding UTF8
 
-$cmdWrapper = "@echo off`r`npowershell -ExecutionPolicy Bypass -File ""$UserBinDir\csmh.ps1"" %*`r`n"
-$cmdWrapper | Set-Content -Path (Join-Path $UserBinDir "csmh.cmd") -Encoding ASCII
+if ($CodexHome -eq $DefaultCodexHome) {
+  $psWrapper | Set-Content -Path (Join-Path $UserBinDir "csmh.ps1") -Encoding UTF8
+  $cmdWrapper = "@echo off`r`npowershell -ExecutionPolicy Bypass -File ""$UserBinDir\csmh.ps1"" %*`r`n"
+  $cmdWrapper | Set-Content -Path (Join-Path $UserBinDir "csmh.cmd") -Encoding ASCII
+} else {
+  Write-Step "skipping global user-bin wrapper because CODEX_HOME is custom: $CodexHome"
+  Write-Step "use this command path directly: $(Join-Path $BinDir 'csmh.ps1')"
+}
 
 Write-Step "done"
-Write-Host "- command (PowerShell): $(Join-Path $UserBinDir 'csmh.ps1')"
-Write-Host "- command (cmd): $(Join-Path $UserBinDir 'csmh.cmd')"
+if ($CodexHome -eq $DefaultCodexHome) {
+  Write-Host "- command (PowerShell): $(Join-Path $UserBinDir 'csmh.ps1')"
+  Write-Host "- command (cmd): $(Join-Path $UserBinDir 'csmh.cmd')"
+} else {
+  Write-Host "- command (PowerShell): $(Join-Path $BinDir 'csmh.ps1')"
+}
 Write-Host "- skills: $SkillsDir\csmh-*"
 Write-Host "- runtime: $CsmhHome"
 Write-Host ""
