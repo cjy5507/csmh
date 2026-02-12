@@ -1,0 +1,41 @@
+{
+  "objective": "Parallel smoke test for CSMH",
+  "mode": "balanced",
+  "max_concurrency": 4,
+  "default_timeout_sec": 20,
+  "tasks": [
+    {
+      "id": "planner",
+      "command": "bash -lc 'mkdir -p .csmh/tmp && sleep 2 && echo planner > .csmh/tmp/planner.txt'",
+      "depends_on": [],
+      "writes": [
+        ".csmh/tmp/planner.txt"
+      ]
+    },
+    {
+      "id": "researcher",
+      "command": "bash -lc 'mkdir -p .csmh/tmp && sleep 2 && echo researcher > .csmh/tmp/researcher.txt'",
+      "depends_on": [],
+      "writes": [
+        ".csmh/tmp/researcher.txt"
+      ]
+    },
+    {
+      "id": "integrator-input",
+      "command": "bash -lc 'cat .csmh/tmp/planner.txt .csmh/tmp/researcher.txt > .csmh/tmp/merged.txt'",
+      "depends_on": [
+        "planner",
+        "researcher"
+      ],
+      "writes": [
+        ".csmh/tmp/merged.txt"
+      ]
+    }
+  ],
+  "integrate": {
+    "command": "bash -lc 'wc -l .csmh/tmp/merged.txt > .csmh/tmp/integrated.txt'"
+  },
+  "verify": {
+    "command": "bash -lc 'test -s .csmh/tmp/integrated.txt'"
+  }
+}

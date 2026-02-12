@@ -1,0 +1,42 @@
+{
+  "objective": "Sample dependency-aware parallel mission",
+  "mode": "balanced",
+  "max_concurrency": 3,
+  "default_timeout_sec": 120,
+  "default_retries": 1,
+  "tasks": [
+    {
+      "id": "analyze-api",
+      "command": "bash -lc 'echo analyze api > .csmh/reports/analyze-api.txt'",
+      "depends_on": [],
+      "writes": [
+        ".csmh/reports/analyze-api.txt"
+      ]
+    },
+    {
+      "id": "analyze-ui",
+      "command": "bash -lc 'echo analyze ui > .csmh/reports/analyze-ui.txt'",
+      "depends_on": [],
+      "writes": [
+        ".csmh/reports/analyze-ui.txt"
+      ]
+    },
+    {
+      "id": "integrate-findings",
+      "command": "bash -lc 'cat .csmh/reports/analyze-api.txt .csmh/reports/analyze-ui.txt > .csmh/reports/merged-findings.txt'",
+      "depends_on": [
+        "analyze-api",
+        "analyze-ui"
+      ],
+      "writes": [
+        ".csmh/reports/merged-findings.txt"
+      ]
+    }
+  ],
+  "integrate": {
+    "command": "bash -lc 'echo integrated > .csmh/reports/integration-status.txt'"
+  },
+  "verify": {
+    "command": "bash -lc 'test -s .csmh/reports/merged-findings.txt && test -s .csmh/reports/integration-status.txt'"
+  }
+}
