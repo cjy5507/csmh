@@ -38,7 +38,7 @@ class TaskSpec:
     command: str
     depends_on: List[str]
     writes: List[str]
-    timeout_sec: Optional[int]
+    timeout_sec: Optional[float]
     retries: int
 
 
@@ -82,7 +82,7 @@ def mode_defaults(mode: str) -> dict:
     return table[mode]
 
 
-def run_command(command: str, timeout_sec: Optional[int]) -> AttemptLog:
+def run_command(command: str, timeout_sec: Optional[float]) -> AttemptLog:
     started_at = utc_now()
     started = time.perf_counter()
     try:
@@ -99,8 +99,18 @@ def run_command(command: str, timeout_sec: Optional[int]) -> AttemptLog:
         error = None
     except subprocess.TimeoutExpired as exc:
         exit_code = 124
-        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+
+        def _decode_timeout_output(value: object) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return str(value)
+
+        stdout = _decode_timeout_output(exc.stdout)
+        stderr = _decode_timeout_output(exc.stderr)
         error = f"timed out after {timeout_sec}s"
     except Exception as exc:
         exit_code = 1
@@ -122,6 +132,7 @@ def run_command(command: str, timeout_sec: Optional[int]) -> AttemptLog:
 
 
 def execute_task(task: TaskSpec) -> TaskResult:
+    total_started = time.perf_counter()
     max_attempts = max(1, task.retries + 1)
     logs: List[AttemptLog] = []
     first_started: Optional[str] = None
@@ -141,7 +152,7 @@ def execute_task(task: TaskSpec) -> TaskResult:
 
     final = logs[-1]
     status = "succeeded" if final.exit_code == 0 else "failed"
-    total_duration = round(sum(a.duration_sec for a in logs), 3)
+    total_duration = round(time.perf_counter() - total_started, 3)
     return TaskResult(
         id=task.id,
         status=status,
@@ -189,8 +200,10 @@ def parse_tasks(mission: dict) -> Dict[str, TaskSpec]:
             raise MissionError(f"task.depends_on must be a string list: {task_id}")
         if not isinstance(writes, list) or not all(isinstance(x, str) and x.strip() for x in writes):
             raise MissionError(f"task.writes must be a string list: {task_id}")
-        if timeout_sec is not None and (not isinstance(timeout_sec, int) or timeout_sec <= 0):
-            raise MissionError(f"task.timeout_sec must be a positive integer: {task_id}")
+        if timeout_sec is not None:
+            if not isinstance(timeout_sec, (int, float)) or timeout_sec <= 0:
+                raise MissionError(f"task.timeout_sec must be a positive number: {task_id}")
+            timeout_sec = float(timeout_sec)
         if not isinstance(retries, int) or retries < 0:
             raise MissionError(f"task.retries must be an integer >= 0: {task_id}")
 
@@ -265,15 +278,19 @@ def dispatch_tasks(task_map: Dict[str, TaskSpec], max_concurrency: int, quiet: b
     interrupted = False
     try:
         while pending or running:
-            for task_id in list(pending.keys()):
-                task = pending[task_id]
-                if any(dep in failed or dep in blocked for dep in task.depends_on):
-                    reason = "blocked by failed dependency"
-                    results[task_id] = blocked_result(task_id, reason)
-                    blocked.add(task_id)
-                    pending.pop(task_id)
-                    if not quiet:
-                        print(f"[blocked] {task_id}: {reason}")
+            changed = True
+            while changed:
+                changed = False
+                for task_id in list(pending.keys()):
+                    task = pending[task_id]
+                    if any(dep in failed or dep in blocked for dep in task.depends_on):
+                        reason = "blocked by failed dependency"
+                        results[task_id] = blocked_result(task_id, reason)
+                        blocked.add(task_id)
+                        pending.pop(task_id)
+                        changed = True
+                        if not quiet:
+                            print(f"[blocked] {task_id}: {reason}")
 
             ready: List[TaskSpec] = []
             for task in pending.values():
@@ -345,7 +362,7 @@ def dispatch_tasks(task_map: Dict[str, TaskSpec], max_concurrency: int, quiet: b
     return results
 
 
-def parse_phase(spec: Optional[dict], default_timeout: Optional[int]) -> Optional[TaskSpec]:
+def parse_phase(spec: Optional[dict], default_timeout: Optional[float]) -> Optional[TaskSpec]:
     if spec is None:
         return None
     if not isinstance(spec, dict):
@@ -355,8 +372,10 @@ def parse_phase(spec: Optional[dict], default_timeout: Optional[int]) -> Optiona
         raise MissionError("phase.command must be a non-empty string")
     timeout_sec = spec.get("timeout_sec", default_timeout)
     retries = spec.get("retries", 0)
-    if timeout_sec is not None and (not isinstance(timeout_sec, int) or timeout_sec <= 0):
-        raise MissionError("phase.timeout_sec must be a positive integer")
+    if timeout_sec is not None:
+        if not isinstance(timeout_sec, (int, float)) or timeout_sec <= 0:
+            raise MissionError("phase.timeout_sec must be a positive number")
+        timeout_sec = float(timeout_sec)
     if not isinstance(retries, int) or retries < 0:
         raise MissionError("phase.retries must be an integer >= 0")
     return TaskSpec(
@@ -372,10 +391,17 @@ def parse_phase(spec: Optional[dict], default_timeout: Optional[int]) -> Optiona
 def run_phase(name: str, spec: Optional[TaskSpec], quiet: bool) -> Optional[TaskResult]:
     if spec is None:
         return None
-    spec.id = name
+    phase_task = TaskSpec(
+        id=name,
+        command=spec.command,
+        depends_on=[],
+        writes=[],
+        timeout_sec=spec.timeout_sec,
+        retries=spec.retries,
+    )
     if not quiet:
         print(f"[phase:start] {name}")
-    result = execute_task(spec)
+    result = execute_task(phase_task)
     if not quiet:
         print(
             f"[phase:done] {name} status={result.status} "
@@ -396,8 +422,10 @@ def run_mission(mission_path: Path, quiet: bool) -> dict:
         raise MissionError("max_concurrency must be an integer >= 1")
 
     default_timeout = mission.get("default_timeout_sec")
-    if default_timeout is not None and (not isinstance(default_timeout, int) or default_timeout <= 0):
-        raise MissionError("default_timeout_sec must be a positive integer")
+    if default_timeout is not None:
+        if not isinstance(default_timeout, (int, float)) or default_timeout <= 0:
+            raise MissionError("default_timeout_sec must be a positive number")
+        default_timeout = float(default_timeout)
 
     tasks = parse_tasks(mission)
 
@@ -464,6 +492,9 @@ def main() -> int:
     mission_path = Path(args.mission)
     if not mission_path.exists():
         print(f"mission file not found: {mission_path}")
+        return 2
+    if not mission_path.is_file():
+        print(f"mission path is not a file: {mission_path}")
         return 2
 
     try:
