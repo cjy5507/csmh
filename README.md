@@ -99,6 +99,14 @@ csmh cancel
 }
 ```
 
+`writes` collision keys are path-normalized internally. If you need non-path lock keys, use `logical:<name>` (for example, `logical:db-users`).
+
+## Security Model
+
+- Mission `command` is executed with shell semantics (`shell=True`), by design.
+- Treat mission files as trusted code. Do not run untrusted mission JSON.
+- If sharing missions across machines, review `command` lines before execution.
+
 ## How This Maps From SMH
 
 - Claude `Task(..., run_in_background=True)` patterns are replaced by mission graph execution in `csmh run`.

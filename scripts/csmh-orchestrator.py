@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+MAX_RETRY_BACKOFF_SEC = 5.0
+BASE_RETRY_BACKOFF_SEC = 0.25
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -54,13 +57,18 @@ class TaskResult:
     attempt_logs: List[AttemptLog]
 
     def to_dict(self) -> dict:
-        payload = asdict(self)
-        payload["attempt_logs"] = [asdict(a) for a in self.attempt_logs]
-        return payload
+        return asdict(self)
 
 
 class MissionError(Exception):
     pass
+
+
+def normalize_write_target(target: str) -> str:
+    cleaned = target.strip()
+    if cleaned.startswith("logical:"):
+        return cleaned
+    return str(Path(cleaned).expanduser().resolve(strict=False))
 
 
 def mode_defaults(mode: str) -> dict:
@@ -127,6 +135,9 @@ def execute_task(task: TaskSpec) -> TaskResult:
         last_ended = attempt_log.ended_at
         if attempt_log.exit_code == 0:
             break
+        if i < max_attempts - 1:
+            delay = min(MAX_RETRY_BACKOFF_SEC, BASE_RETRY_BACKOFF_SEC * (2**i))
+            time.sleep(delay)
 
     final = logs[-1]
     status = "succeeded" if final.exit_code == 0 else "failed"
@@ -176,18 +187,20 @@ def parse_tasks(mission: dict) -> Dict[str, TaskSpec]:
 
         if not isinstance(depends_on, list) or not all(isinstance(x, str) for x in depends_on):
             raise MissionError(f"task.depends_on must be a string list: {task_id}")
-        if not isinstance(writes, list) or not all(isinstance(x, str) for x in writes):
+        if not isinstance(writes, list) or not all(isinstance(x, str) and x.strip() for x in writes):
             raise MissionError(f"task.writes must be a string list: {task_id}")
         if timeout_sec is not None and (not isinstance(timeout_sec, int) or timeout_sec <= 0):
             raise MissionError(f"task.timeout_sec must be a positive integer: {task_id}")
         if not isinstance(retries, int) or retries < 0:
             raise MissionError(f"task.retries must be an integer >= 0: {task_id}")
 
+        normalized_writes = [normalize_write_target(x) for x in writes]
+
         task_map[task_id] = TaskSpec(
             id=task_id,
             command=command,
             depends_on=depends_on,
-            writes=writes,
+            writes=normalized_writes,
             timeout_sec=timeout_sec,
             retries=retries,
         )
@@ -248,7 +261,9 @@ def dispatch_tasks(task_map: Dict[str, TaskSpec], max_concurrency: int, quiet: b
     locked_writes: Set[str] = set()
     results: Dict[str, TaskResult] = {}
 
-    with ThreadPoolExecutor(max_workers=max_concurrency) as pool:
+    pool = ThreadPoolExecutor(max_workers=max_concurrency)
+    interrupted = False
+    try:
         while pending or running:
             for task_id in list(pending.keys()):
                 task = pending[task_id]
@@ -291,7 +306,22 @@ def dispatch_tasks(task_map: Dict[str, TaskSpec], max_concurrency: int, quiet: b
             for future in done:
                 task = running.pop(future)
                 locked_writes.difference_update(task.writes)
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = TaskResult(
+                        id=task.id,
+                        status="failed",
+                        attempts=0,
+                        started_at=None,
+                        ended_at=utc_now(),
+                        duration_sec=0.0,
+                        exit_code=1,
+                        stdout="",
+                        stderr="",
+                        error=f"worker exception: {exc}",
+                        attempt_logs=[],
+                    )
                 results[task.id] = result
                 if result.status == "succeeded":
                     succeeded.add(task.id)
@@ -302,6 +332,15 @@ def dispatch_tasks(task_map: Dict[str, TaskSpec], max_concurrency: int, quiet: b
                         f"[done] {task.id} status={result.status} "
                         f"attempts={result.attempts} duration={result.duration_sec}s"
                     )
+    except KeyboardInterrupt as exc:
+        interrupted = True
+        for future in list(running.keys()):
+            future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise MissionError("interrupted by user") from exc
+    finally:
+        if not interrupted:
+            pool.shutdown(wait=True)
 
     return results
 
